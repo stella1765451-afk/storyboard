@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>分镜分析 · GitHub Pages 版</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.10/babel.min.js"></script>
+<style>
+  html,body{margin:0;padding:0;background:#080d14;}
+  *{-webkit-tap-highlight-color:transparent;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useCallback } = React;
+
+// ─── 数据源根目录（相对于 index.html）─────────────────────────────────────
+const BASE = "projects";
+
+// ─── 常量 ──────────────────────────────────────────────────────────────────
+const SHOT_SIZES   = ["大远景","远景","全景","中景","中近景","近景","特写","大特写"];
+const CAM_MOVES    = ["固定","推","拉","摇","移","跟","升","降","旋转","手持"];
+const NAR_FUNCS    = ["铺垫","角色引入","冲突引入","冲突升级","高潮","转折","收尾","过渡","悬念","空间建立","情绪反应","亮底牌"];
+const TRANSITIONS  = ["硬切","叠化","淡入淡出","匹配剪辑","动作剪辑","视线剪辑","跳切","声音桥"];
+const CHANGE_TYPES = ["新增镜头","删除镜头","景别调整↑","景别调整↓","时长延长","时长缩短","摄机运动改变","摄机角度改变","轴线/构图调整","剪辑点前移","剪辑点后移","镜头顺序调整","无变化"];
+const TRANS_TYPES  = ["忠实转译","主动创作","留白填充","转译难点"];
+const CREATION_TYPES = ["忠实转译","主动创作","留白填充"];
+const DIFF_TYPES   = ["一致","小差异","大差异","我有真实无","真实有我无"];
+const REUSABLE     = ["高","中","低"];
+const SITUATION_TYPES = ["A·纯成片逆向","B·别人项目","C·自己项目"];
+
+const IC = ["#1a5c4a","#1e7a5f","#21a07a","#43c59e","#8ddfc4","#f5c842","#f0952a","#d95f2b","#b83820","#e03535"];
+const getIC = v => IC[Math.max(0,Math.min(9,Math.round(v)-1))];
+
+// ─── 颜色主题 ──────────────────────────────────────────────────────────────
+const dark="#080d14", surface="rgba(255,255,255,0.04)", border="rgba(255,255,255,0.08)";
+const text="rgba(255,255,255,0.85)", dim="rgba(255,255,255,0.35)", faint="rgba(255,255,255,0.15)";
+const CHANGE_COLORS={"新增镜头":"#22c55e","删除镜头":"#ef4444","景别调整↑":"#3b82f6","景别调整↓":"#a78bfa","时长延长":"#f59e0b","时长缩短":"#f97316","摄机运动改变":"#06b6d4","摄机角度改变":"#8b5cf6","轴线/构图调整":"#ec4899","剪辑点前移":"#84cc16","剪辑点后移":"#eab308","镜头顺序调整":"#14b8a6","无变化":"#6b7280"};
+
+const EMPTY_STATE = {
+  shots:[], changes:[], prods:{},
+  projects:[], projectDirs:{}, activeProject:"默认项目"
+};
+
+// ─── 解析镜头数组（兼容 Gemini 下划线字段 & 工具驼峰字段）────────────────────
+function parseImport(arr, project) {
+  return arr.map((s,i)=>({
+    id:s.id||s.shot||s.shot_number||`SC-${String(i+1).padStart(3,"0")}`,
+    camId:s.camId||s.cam_id||"",
+    timecode:s.timecode||s.start||"",
+    start:s.start||s.timecode||"",
+    end:s.end||"",
+    duration:Number(s.duration||s.duration_sec||2),
+    shotSize:s.shotSize||s.shot_size||"中景",
+    camMove:s.camMove||s.camera_move||s.camera_movement||"固定",
+    subject:s.subject||s.content||"",
+    transition:s.transition||s.transition_in||"硬切",
+    narrativeFunc:s.narrativeFunc||s.narrative_function||"铺垫",
+    intensity:Number(s.intensity||s.emotion_intensity||5),
+    intent:s.intent||s.director_intent||"",
+    coreIntent:s.coreIntent||s.core_intent||"",
+    composition:s.composition||"",
+    cameraAngle:s.cameraAngle||s.camera_language_angle_and_perspective||s.camera_angle||"",
+    editingFunc:s.editingFunc||s.editing_logic_function||s.editing_function||"",
+    editingRhythm:s.editingRhythm||s.editing_logic_rhythm_effect||s.editing_rhythm||"",
+    project:s.project||project||"默认项目",
+    situation:s.situation||"A·纯成片逆向",
+    scriptRef:s.scriptRef||s.script_ref||"",
+    translationType:s.translationType||s.translation_type||"",
+    translationNote:s.translationNote||s.translation_note||"",
+    creationType:s.creationType||s.creation_type||"",
+    creationNote:s.creationNote||s.creation_note||"",
+    reusable:s.reusable||"",
+    myShotSize:s.myShotSize||s.my_shot_size||"",
+    myCamMove:s.myCamMove||s.my_cam_move||"",
+    myReasoning:s.myReasoning||s.my_reasoning||"",
+    diffType:s.diffType||s.diff_type||"",
+    diffNote:s.diffNote||s.diff_note||"",
+  }));
+}
+
+function emptyShot(n, project) {
+  return {
+    id:`SC-${String(n).padStart(3,"0")}`,camId:"",timecode:"",start:"",end:"",duration:2,
+    shotSize:"中景",camMove:"固定",subject:"",transition:"硬切",narrativeFunc:"铺垫",
+    intensity:5,intent:"",coreIntent:"",composition:"",cameraAngle:"",editingFunc:"",editingRhythm:"",
+    project:project||"默认项目",situation:"A·纯成片逆向",
+    scriptRef:"",translationType:"",translationNote:"",creationType:"",creationNote:"",reusable:"",
+    myShotSize:"",myCamMove:"",myReasoning:"",diffType:"",diffNote:""
+  };
+}
+
+// ─── 从仓库加载全部项目数据 ───────────────────────────────────────────────
+async function fetchJSON(url){
+  const res = await fetch(url, {cache:"no-store"});
+  if(!res.ok) throw new Error(`${res.status} ${url}`);
+  return res.json();
+}
+
+async function loadFromRepo(){
+  let manifest;
+  try { manifest = await fetchJSON(`${BASE}/manifest.json`); }
+  catch(e){ throw new Error("MANIFEST_NOT_FOUND"); }
+
+  // manifest.projects 支持两种写法：
+  //   ["伊丽川预告","绝区零"]  或  [{name:"伊丽川预告",dir:"yilichuan"}]
+  const entries = (manifest.projects||[]).map(p =>
+    typeof p === "string" ? {name:p, dir:p} : {name:p.name, dir:p.dir||p.name}
+  );
+
+  const shots=[], changes=[], prods={}, projectDirs={};
+  for(const {name,dir} of entries){
+    projectDirs[name]=dir;
+    const d = dir.split("/").map(encodeURIComponent).join("/");
+    try {
+      const raw = await fetchJSON(`${BASE}/${d}/shots.json`);
+      const list = Array.isArray(raw) ? raw : (raw.shots||[]);
+      parseImport(list, name).forEach(s=>shots.push({...s, project:s.project||name}));
+    } catch(e){ /* 该项目暂无 shots.json */ }
+    try {
+      const raw = await fetchJSON(`${BASE}/${d}/changes.json`);
+      const list = Array.isArray(raw) ? raw : (raw.changes||[]);
+      list.forEach(c=>changes.push({...c, project:c.project||name}));
+    } catch(e){ /* 无 changes.json */ }
+    try {
+      const raw = await fetchJSON(`${BASE}/${d}/production.json`);
+      prods[name] = {summary:raw.summary||"", dims:(raw.dims||[]).map(dm=>({
+        dim:dm.dim||"",score:Number(dm.score||5),highlights:dm.highlights||"",issues:dm.issues||"",outstanding:dm.outstanding||""
+      }))};
+    } catch(e){ /* 无 production.json */ }
+  }
+  return {
+    shots, changes, prods,
+    projects: entries.map(p=>p.name),
+    projectDirs,
+    activeProject: entries[0] ? entries[0].name : "默认项目"
+  };
+}
+
+// ─── 下载工具 ─────────────────────────────────────────────────────────────
+function download(filename, obj){
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:"application/json"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download=filename; a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+// 导出镜头时去掉工具内部不需要落盘的派生字段，保持文件整洁
+function shotsForFile(shots){
+  return shots.map(({...s})=>{ delete s.start; return s; });
+}
+
+// ─── UI 基础组件 ───────────────────────────────────────────────────────────
+function Tag({label,color}){
+  return <span style={{background:color?`${color}22`:"rgba(255,255,255,0.07)",color:color||"rgba(255,255,255,0.55)",border:`1px solid ${color?color+"33":"rgba(255,255,255,0.1)"}`,borderRadius:4,padding:"1px 7px",fontSize:10,fontFamily:"monospace",whiteSpace:"nowrap"}}>{label}</span>;
+}
+function Row({label,val}){
+  if(!val)return null;
+  return <div style={{display:"flex",gap:6,marginBottom:3,fontSize:11}}>
+    <span style={{color:dim,minWidth:36,flexShrink:0}}>{label}</span>
+    <span style={{color:"rgba(255,255,255,0.65)"}}>{val}</span>
+  </div>;
+}
+function ScoreBar({score}){
+  const c=getIC(score);
+  return <div style={{display:"flex",alignItems:"center",gap:6}}>
+    <div style={{flex:1,height:4,background:"rgba(255,255,255,0.08)",borderRadius:2,overflow:"hidden"}}>
+      <div style={{width:`${score*10}%`,height:"100%",background:c,borderRadius:2}}/>
+    </div>
+    <span style={{fontSize:11,color:c,fontFamily:"monospace",minWidth:14}}>{score}</span>
+  </div>;
+}
+function Inp({value,onChange,placeholder,type,step,min,style}){
+  const base={background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:6,padding:"6px 10px",fontSize:12,color:text,outline:"none",width:"100%",boxSizing:"border-box",fontFamily:"inherit"};
+  return <input type={type||"text"} step={step} min={min} value={value} onChange={onChange} placeholder={placeholder} style={{...base,...style}}/>;
+}
+function Sel({value,onChange,children,style}){
+  const base={background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:6,padding:"6px 10px",fontSize:12,color:text,outline:"none",width:"100%",boxSizing:"border-box"};
+  return <select value={value} onChange={onChange} style={{...base,...style}}>{children}</select>;
+}
+function TA({value,onChange,placeholder,rows}){
+  return <textarea value={value} onChange={onChange} placeholder={placeholder} rows={rows||2} style={{background:"rgba(255,255,255,0.05)",border:"1px solid rgba(255,255,255,0.1)",borderRadius:6,padding:"6px 10px",fontSize:12,color:text,outline:"none",width:"100%",boxSizing:"border-box",resize:"vertical",fontFamily:"inherit"}}/>;
+}
+function Lbl({children}){
+  return <div style={{fontSize:10,color:dim,marginBottom:3,letterSpacing:"0.5px",textTransform:"uppercase"}}>{children}</div>;
+}
+function Section({title,children}){
+  return <div style={{marginBottom:12}}>
+    <div style={{fontSize:10,fontWeight:600,color:"rgba(255,255,255,0.25)",letterSpacing:"1px",textTransform:"uppercase",marginBottom:8,paddingBottom:4,borderBottom:"1px solid rgba(255,255,255,0.06)"}}>{title}</div>
+    {children}
+  </div>;
+}
+
+// ─── 节奏曲线 ─────────────────────────────────────────────────────────────
+function RhythmCurve({shots,onSelect,selected}){
+  const [hover,setHover]=useState(null);
+  if(!shots.length)return null;
+  const W=700,H=280,PL=44,PR=20,PT=28,PB=48,cW=W-PL-PR,cH=H-PT-PB;
+  const totalDur=shots.reduce((s,sh)=>s+sh.duration,0);
+  let cumX=PL;
+  const bars=shots.map((sh,i)=>{
+    const w=Math.max(8,(sh.duration/totalDur)*cW),h=(sh.intensity/10)*cH,x=cumX,y=PT+cH-h;
+    cumX+=w+2;
+    return{...sh,bx:x,by:y,bw:w,bh:h};
+  });
+  const active=hover??selected;
+  const ab=active!==null?bars[active]:null;
+  return(
+    <div style={{position:"relative",background:"#0d1117",borderRadius:12,padding:"16px 0 8px",marginBottom:16}}>
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{display:"block"}}>
+        {[2,4,6,8,10].map(v=>{const y=PT+cH-(v/10)*cH;return <g key={v}>
+          <line x1={PL} y1={y} x2={W-PR} y2={y} stroke="rgba(255,255,255,0.06)" strokeWidth="1"/>
+          <text x={PL-6} y={y+4} textAnchor="end" fill="rgba(255,255,255,0.3)" fontSize="10" fontFamily="monospace">{v}</text>
+        </g>;})}
+        {bars.map((b,i)=>{const isA=i===active;return(
+          <g key={i} onMouseEnter={()=>setHover(i)} onMouseLeave={()=>setHover(null)} onClick={()=>onSelect(i===selected?null:i)} style={{cursor:"pointer"}}>
+            <rect x={b.bx} y={b.by} width={b.bw} height={b.bh} rx={2} fill={getIC(b.intensity)} opacity={isA?1:0.55} style={{transition:"opacity .12s"}}/>
+            {isA&&<rect x={b.bx} y={PT} width={b.bw} height={cH} rx={2} fill={getIC(b.intensity)} opacity={0.08}/>}
+            <text x={b.bx+b.bw/2} y={H-PB+18} textAnchor="middle" fill={isA?"rgba(255,255,255,0.8)":"rgba(255,255,255,0.2)"} fontSize="9" fontFamily="monospace">{b.id.replace("SC-","")}</text>
+          </g>);})}
+        <polyline points={bars.map(b=>`${b.bx+b.bw/2},${b.by}`).join(" ")} fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="1.5" strokeLinejoin="round"/>
+        {bars.map((b,i)=><circle key={i} cx={b.bx+b.bw/2} cy={b.by} r={i===active?5:2.5} fill={getIC(b.intensity)} stroke="#0d1117" strokeWidth={i===active?2:1} style={{transition:"r .12s"}}/>)}
+        <text x={PL} y={16} fill="rgba(255,255,255,0.4)" fontSize="10" fontFamily="monospace">情绪强度</text>
+        <text x={W-PR} y={H-4} textAnchor="end" fill="rgba(255,255,255,0.25)" fontSize="10" fontFamily="monospace">镜头序列 →</text>
+      </svg>
+      {ab&&<div style={{position:"absolute",top:Math.max(8,ab.by-10),left:Math.min(ab.bx+ab.bw/2+8,460),background:"rgba(15,20,28,0.97)",border:`1px solid ${getIC(ab.intensity)}44`,borderLeft:`3px solid ${getIC(ab.intensity)}`,borderRadius:8,padding:"10px 14px",fontSize:11,lineHeight:1.7,color:"rgba(255,255,255,0.85)",pointerEvents:"none",zIndex:20,width:240,boxShadow:"0 4px 24px rgba(0,0,0,0.6)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
+          <span style={{fontWeight:700,fontSize:13,color:"#fff"}}>{ab.id}</span>
+          {ab.camId&&<span style={{fontFamily:"monospace",color:"rgba(255,255,255,0.4)",fontSize:10}}>{ab.camId}</span>}
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:6}}>
+          <Tag color={getIC(ab.intensity)} label={`强度 ${ab.intensity}`}/><Tag label={ab.shotSize}/><Tag label={ab.camMove}/><Tag label={`${ab.duration}s`}/>
+          {ab.project&&<Tag label={ab.project}/>}
+        </div>
+        {ab.subject&&<Row label="画面" val={ab.subject}/>}
+        {ab.coreIntent&&<Row label="核心" val={ab.coreIntent}/>}
+        {ab.creationNote&&<Row label="主动创作" val={ab.creationNote}/>}
+        {ab.reusable&&<Row label="可复用" val={ab.reusable}/>}
+      </div>}
+    </div>
+  );
+}
+
+function Timeline({shots,selected,onSelect}){
+  const total=shots.reduce((s,sh)=>s+sh.duration,0);
+  return <div style={{display:"flex",gap:1,height:20,borderRadius:4,overflow:"hidden",marginBottom:4,cursor:"pointer"}}>
+    {shots.map((sh,i)=>{const w=Math.max(1,(sh.duration/total)*100);return <div key={i} title={`${sh.id}·${sh.duration}s·强度${sh.intensity}·${sh.project||""}`} onClick={()=>onSelect(i===selected?null:i)} style={{flex:`${w} 0 0`,background:getIC(sh.intensity),opacity:i===selected?1:0.6,outline:i===selected?"2px solid white":"none",outlineOffset:-1,transition:"opacity .1s"}}/>;})}</div>;
+}
+
+// ─── 镜头详情抽屉 ─────────────────────────────────────────────────────────
+function ShotDetail({shot,onClose,onChange,projects}){
+  if(!shot)return null;
+  const u=(k,v)=>onChange({...shot,[k]:v});
+  return(
+    <div style={{background:"rgba(10,15,22,0.98)",border:"1px solid rgba(255,255,255,0.08)",borderRadius:12,padding:"20px",marginTop:12,position:"relative"}}>
+      <button onClick={onClose} style={{position:"absolute",top:14,right:14,background:"none",border:"none",color:dim,cursor:"pointer",fontSize:18}}>×</button>
+      <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:16}}>
+        <span style={{fontSize:16,fontWeight:700,color:"#fff",fontFamily:"monospace"}}>{shot.id}</span>
+        {shot.camId&&<span style={{fontSize:12,color:"rgba(255,255,255,0.35)",fontFamily:"monospace"}}>{shot.camId}</span>}
+        {shot.timecode&&<span style={{fontSize:11,color:dim}}>{shot.timecode}</span>}
+        <span style={{marginLeft:"auto",padding:"2px 10px",borderRadius:4,fontSize:11,background:`${getIC(shot.intensity)}22`,color:getIC(shot.intensity),border:`1px solid ${getIC(shot.intensity)}44`}}>强度 {shot.intensity}/10</span>
+      </div>
+
+      <Section title="基础信息">
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:10}}>
+          {[["镜号","id",""],["导演镜号","camId","cam001"],["时间码","timecode","00:00"],["时长(秒)","duration",""]].map(([l,k,ph])=>(
+            <div key={k}><Lbl>{l}</Lbl><Inp value={shot[k]||""} placeholder={ph} type={k==="duration"?"number":undefined} step={k==="duration"?0.1:undefined} onChange={e=>u(k,k==="duration"?+e.target.value:e.target.value)}/></div>))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+          <div><Lbl>景别</Lbl><Sel value={shot.shotSize} onChange={e=>u("shotSize",e.target.value)}>{SHOT_SIZES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+          <div><Lbl>摄机运动</Lbl><Sel value={shot.camMove} onChange={e=>u("camMove",e.target.value)}>{CAM_MOVES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+          <div><Lbl>叙事功能</Lbl><Sel value={shot.narrativeFunc} onChange={e=>u("narrativeFunc",e.target.value)}>{NAR_FUNCS.map(o=><option key={o}>{o}</option>)}</Sel></div>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
+          <div><Lbl>项目</Lbl>
+            <Sel value={shot.project||""} onChange={e=>u("project",e.target.value)}>
+              <option value="">未分配</option>
+              {(projects||[]).map(p=><option key={p}>{p}</option>)}
+            </Sel>
+          </div>
+          <div><Lbl>训练情况</Lbl><Sel value={shot.situation||""} onChange={e=>u("situation",e.target.value)}><option value="">—</option>{SITUATION_TYPES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+          <div><Lbl>转场方式</Lbl><Sel value={shot.transition} onChange={e=>u("transition",e.target.value)}>{TRANSITIONS.map(o=><option key={o}>{o}</option>)}</Sel></div>
+        </div>
+        <div style={{marginBottom:10}}><Lbl>情绪强度 {shot.intensity}/10</Lbl>
+          <input type="range" min="1" max="10" value={shot.intensity} onChange={e=>u("intensity",+e.target.value)} style={{width:"100%",accentColor:getIC(shot.intensity)}}/></div>
+      </Section>
+
+      <Section title="摄影语言分析">
+        {[["subject","画面内容"],["intent","导演意图"],["coreIntent","核心意图（一句话）"],["composition","构图分析"],["cameraAngle","摄影角度与视点"],["editingFunc","剪辑功能"],["editingRhythm","节奏感受"]].map(([k,l])=>(
+          <div key={k} style={{marginBottom:8}}><Lbl>{l}</Lbl><TA value={shot[k]||""} onChange={e=>u(k,e.target.value)}/></div>))}
+      </Section>
+
+      <Section title="模板9 · 转译分析（情况B/C专用）">
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}}>
+          <div><Lbl>对应剧本摘要</Lbl><Inp value={shot.scriptRef||""} placeholder="10字内" onChange={e=>u("scriptRef",e.target.value)}/></div>
+          <div><Lbl>转译类型（9B/9C）</Lbl><Sel value={shot.translationType||""} onChange={e=>u("translationType",e.target.value)}><option value="">—</option>{TRANS_TYPES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+        </div>
+        <div style={{marginBottom:8}}><Lbl>转译决策说明（9B/9C）</Lbl><TA value={shot.translationNote||""} onChange={e=>u("translationNote",e.target.value)}/></div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}}>
+          <div><Lbl>主动创作类型（9C）</Lbl><Sel value={shot.creationType||""} onChange={e=>u("creationType",e.target.value)}><option value="">—</option>{CREATION_TYPES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+          <div><Lbl>可复用性（9C）</Lbl><Sel value={shot.reusable||""} onChange={e=>u("reusable",e.target.value)}><option value="">—</option>{REUSABLE.map(o=><option key={o}>{o}</option>)}</Sel></div>
+        </div>
+        <div style={{marginBottom:8}}><Lbl>主动创作说明（9C）</Lbl><TA value={shot.creationNote||""} onChange={e=>u("creationNote",e.target.value)}/></div>
+      </Section>
+
+      <Section title="盲拆对比（9D专用）">
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}}>
+          <div><Lbl>我的景别</Lbl><Sel value={shot.myShotSize||""} onChange={e=>u("myShotSize",e.target.value)}><option value="">—</option>{SHOT_SIZES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+          <div><Lbl>我的摄机运动</Lbl><Sel value={shot.myCamMove||""} onChange={e=>u("myCamMove",e.target.value)}><option value="">—</option>{CAM_MOVES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+        </div>
+        <div style={{marginBottom:8}}><Lbl>我的设计理由</Lbl><TA value={shot.myReasoning||""} onChange={e=>u("myReasoning",e.target.value)}/></div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}}>
+          <div><Lbl>差异类型</Lbl><Sel value={shot.diffType||""} onChange={e=>u("diffType",e.target.value)}><option value="">—</option>{DIFF_TYPES.map(o=><option key={o}>{o}</option>)}</Sel></div>
+          <div style={{alignSelf:"end"}}><Lbl>差异说明</Lbl><Inp value={shot.diffNote||""} onChange={e=>u("diffNote",e.target.value)}/></div>
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+// ─── 案例库卡片 ──────────────────────────────────────────────────────────
+function CaseCard({shot,onRemove}){
+  const [open,setOpen]=useState(false);
+  const ct=shot.creationType||shot.translationType;
+  const ctColor={"主动创作":"#22c55e","留白填充":"#3b82f6","忠实转译":"#9ca3af","转译难点":"#f97316"}[ct]||null;
+  return(
+    <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderLeft:`3px solid ${getIC(shot.intensity)}`,borderRadius:8,overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",cursor:"pointer"}} onClick={()=>setOpen(o=>!o)}>
+        <span style={{fontFamily:"monospace",fontSize:11,color:dim,minWidth:52}}>{shot.id}</span>
+        {shot.camId&&<span style={{fontFamily:"monospace",fontSize:10,color:faint,minWidth:52}}>{shot.camId}</span>}
+        <div style={{display:"flex",gap:4,flexWrap:"wrap",flex:1}}>
+          {[shot.narrativeFunc,shot.shotSize,shot.camMove].map((v,i)=><Tag key={i} label={v}/>)}
+          <Tag color={getIC(shot.intensity)} label={`${shot.intensity}`}/>
+          {ct&&<Tag color={ctColor} label={ct}/>}
+          {shot.reusable&&<Tag color={shot.reusable==="高"?"#22c55e":shot.reusable==="中"?"#f59e0b":"#6b7280"} label={`复用:${shot.reusable}`}/>}
+          {shot.project&&<Tag label={shot.project}/>}
+        </div>
+        <span style={{color:faint,fontSize:12}}>{open?"▲":"▼"}</span>
+        <button onClick={e=>{e.stopPropagation();onRemove();}} style={{background:"none",border:"none",color:faint,cursor:"pointer",fontSize:16}}>×</button>
+      </div>
+      {open&&<div style={{padding:"0 14px 14px",borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+        {shot.subject&&<div style={{color:"rgba(255,255,255,0.7)",fontSize:12,margin:"10px 0 6px",fontWeight:500}}>{shot.subject}</div>}
+        {shot.coreIntent&&<div style={{color:"rgba(255,255,255,0.5)",fontSize:11,marginBottom:4}}>◆ {shot.coreIntent}</div>}
+        {shot.creationNote&&<div style={{color:"rgba(74,222,128,0.8)",fontSize:11,marginBottom:4,borderLeft:"2px solid rgba(74,222,128,0.3)",paddingLeft:8}}>主动创作：{shot.creationNote}</div>}
+        {shot.translationNote&&<div style={{color:"rgba(96,165,250,0.8)",fontSize:11,marginBottom:4,borderLeft:"2px solid rgba(96,165,250,0.3)",paddingLeft:8}}>转译：{shot.translationNote}</div>}
+        {shot.scriptRef&&<Row label="剧本" val={shot.scriptRef}/>}
+        <Row label="构图" val={shot.composition}/>
+        <Row label="视角" val={shot.cameraAngle}/>
+        <Row label="节奏" val={shot.editingRhythm}/>
+        {shot.myShotSize&&<div style={{marginTop:6,padding:"6px 8px",background:"rgba(255,255,255,0.03)",borderRadius:4,fontSize:11,color:dim}}>我的方案：{shot.myShotSize}·{shot.myCamMove} → <span style={{color:shot.diffType==="一致"?"#22c55e":shot.diffType&&shot.diffType.includes("大")?"#ef4444":"#f59e0b"}}>{shot.diffType||"未评估"}</span></div>}
+      </div>}
+    </div>
+  );
+}
+
+// ─── 版本对比·变化卡片 ────────────────────────────────────────────────────
+function ChangeCard({change,onRemove}){
+  const [open,setOpen]=useState(false);
+  return(
+    <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:8,overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",cursor:"pointer"}} onClick={()=>setOpen(o=>!o)}>
+        <div style={{display:"flex",flexDirection:"column",gap:1,minWidth:80}}>
+          <span style={{fontFamily:"monospace",fontSize:10,color:dim}}>{change.camIdDraft||"—"}</span>
+          <span style={{fontSize:9,color:faint}}>→</span>
+          <span style={{fontFamily:"monospace",fontSize:10,color:"rgba(255,255,255,0.7)"}}>{change.camIdFinal||"—"}</span>
+        </div>
+        <div style={{display:"flex",gap:4,flexWrap:"wrap",flex:1}}>
+          {(change.changeTypes||[]).map((t,i)=><span key={i} style={{background:`${CHANGE_COLORS[t]||"#6b7280"}22`,color:CHANGE_COLORS[t]||"#9ca3af",border:`1px solid ${CHANGE_COLORS[t]||"#6b7280"}44`,borderRadius:4,padding:"1px 7px",fontSize:10,whiteSpace:"nowrap"}}>{t}</span>)}
+          {change.project&&<Tag label={change.project}/>}
+        </div>
+        <span style={{color:faint,fontSize:12}}>{open?"▲":"▼"}</span>
+        {onRemove&&<button onClick={e=>{e.stopPropagation();onRemove();}} style={{background:"none",border:"none",color:faint,cursor:"pointer",fontSize:16}}>×</button>}
+      </div>
+      {open&&<div style={{padding:"0 14px 14px",borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginTop:12}}>
+          <div><div style={{fontSize:10,color:dim,marginBottom:4,textTransform:"uppercase"}}>初版</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.5)",lineHeight:1.6,padding:"8px 10px",background:"rgba(239,68,68,0.06)",borderRadius:6,border:"1px solid rgba(239,68,68,0.15)"}}>{change.draftDesc||"—"}</div></div>
+          <div><div style={{fontSize:10,color:dim,marginBottom:4,textTransform:"uppercase"}}>定版</div>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.7)",lineHeight:1.6,padding:"8px 10px",background:"rgba(34,197,94,0.06)",borderRadius:6,border:"1px solid rgba(34,197,94,0.15)"}}>{change.finalDesc||"—"}</div></div>
+        </div>
+        {change.reason&&<div style={{marginTop:10}}><div style={{fontSize:10,color:dim,marginBottom:4,textTransform:"uppercase"}}>推测修改原因</div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.65)",lineHeight:1.7,borderLeft:"2px solid rgba(255,255,255,0.15)",paddingLeft:10}}>{change.reason}</div></div>}
+        {change.rhythmEffect&&<div style={{marginTop:6,fontSize:11,color:dim}}>节奏效果：<span style={{color:"rgba(255,255,255,0.5)"}}>{change.rhythmEffect}</span></div>}
+      </div>}
+    </div>
+  );
+}
+
+// ─── 制作评估面板 ─────────────────────────────────────────────────────────
+function ProdPanel({prod}){
+  const [open,setOpen]=useState({});
+  const avg=prod.dims.length?(prod.dims.reduce((s,d)=>s+d.score,0)/prod.dims.length).toFixed(1):0;
+  if(!prod.dims.length && !prod.summary) return <div style={{textAlign:"center",color:dim,padding:32,fontSize:12}}>当前项目暂无制作评估<br/><span style={{fontSize:11,color:faint}}>放置 production.json，或从导入面板粘贴 {'{ "dims":[...] }'}</span></div>;
+  return(
+    <div>
+      {prod.summary&&<div style={{background:surface,border:`1px solid ${border}`,borderRadius:8,padding:"12px 16px",marginBottom:16,fontSize:12,color:"rgba(255,255,255,0.65)",lineHeight:1.7}}>
+        <span style={{fontWeight:600,color:text}}>综合评估 </span>{prod.summary}
+        {prod.dims.length>0&&<span style={{marginLeft:8,fontFamily:"monospace",color:getIC(Math.round(avg))}}>均分 {avg}/10</span>}
+      </div>}
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {prod.dims.map((d,i)=>(
+          <div key={i} style={{background:"rgba(255,255,255,0.03)",border:`1px solid rgba(255,255,255,0.07)`,borderLeft:`3px solid ${getIC(d.score)}`,borderRadius:8,overflow:"hidden"}}>
+            <div style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",cursor:"pointer"}} onClick={()=>setOpen(o=>({...o,[i]:!o[i]}))}>
+              <span style={{fontSize:13,fontWeight:500,color:text,minWidth:72}}>{d.dim}</span>
+              <div style={{flex:1,maxWidth:160}}><ScoreBar score={d.score}/></div>
+              {d.outstanding&&<span style={{fontSize:10,background:"rgba(250,199,117,0.15)",color:"#fac775",border:"1px solid rgba(250,199,117,0.3)",borderRadius:4,padding:"1px 6px"}}>亮点</span>}
+              <span style={{color:faint,fontSize:12}}>{open[i]?"▲":"▼"}</span>
+            </div>
+            {open[i]&&<div style={{padding:"0 16px 14px",borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+              {d.outstanding&&<div style={{marginTop:10,padding:"8px 12px",background:"rgba(250,199,117,0.08)",border:"1px solid rgba(250,199,117,0.2)",borderRadius:6,fontSize:12,color:"rgba(250,199,117,0.9)",lineHeight:1.7}}>★ 超预期：{d.outstanding}</div>}
+              {d.highlights&&<div style={{marginTop:10}}><div style={{fontSize:10,color:dim,marginBottom:4,textTransform:"uppercase"}}>亮点</div><div style={{fontSize:12,color:"rgba(255,255,255,0.65)",lineHeight:1.7}}>{d.highlights}</div></div>}
+              {d.issues&&<div style={{marginTop:8}}><div style={{fontSize:10,color:"rgba(239,68,68,0.6)",marginBottom:4,textTransform:"uppercase"}}>待提升</div><div style={{fontSize:12,color:"rgba(255,255,255,0.5)",lineHeight:1.7}}>{d.issues}</div></div>}
+            </div>}
+          </div>))}
+      </div>
+    </div>
+  );
+}
+
+// ─── 主应用 ───────────────────────────────────────────────────────────────
+function App(){
+  const [state,setState]=useState(null);        // null = loading
+  const [loadError,setLoadError]=useState("");   // 加载失败提示
+  const [tab,setTab]=useState(0);
+  const [selected,setSelected]=useState(null);
+  const [compareTab,setCompareTab]=useState(0);
+  const [jsonInput,setJsonInput]=useState("");
+  const [importMsg,setImportMsg]=useState("");
+  const [dirty,setDirty]=useState(false);        // 是否有未导出的本地修改
+  const [caseFilter,setCaseFilter]=useState({narrativeFunc:"",camMove:"",shotSize:"",situation:"",creationType:"",reusable:"",project:"",search:""});
+  const [newProjectName,setNewProjectName]=useState("");
+  const [exportProj,setExportProj]=useState("");
+
+  // 启动 / 重新从仓库加载
+  const reload = useCallback(async()=>{
+    setState(null); setLoadError("");
+    try{
+      const loaded = await loadFromRepo();
+      setState(loaded); setDirty(false);
+      setExportProj(loaded.activeProject);
+    }catch(e){
+      setLoadError(String(e.message||e));
+      setState(EMPTY_STATE);
+    }
+  },[]);
+
+  useEffect(()=>{ reload(); },[reload]);
+
+  if(!state) return(
+    <div style={{background:dark,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:dim,fontFamily:"'DM Sans',system-ui"}}>
+      正在从仓库加载数据…
+    </div>
+  );
+
+  const {shots,changes,prods,projects,activeProject}=state;
+  const upd=patch=>{setState(s=>({...s,...patch}));setDirty(true);};
+  const updateShot=(i,sh)=>upd({shots:state.shots.map((x,j)=>j===i?sh:x)});
+  const removeShot=i=>{upd({shots:state.shots.filter((_,j)=>j!==i)});if(selected===i)setSelected(null);};
+  const addShot=()=>upd({shots:[...state.shots,emptyShot(state.shots.length+1,activeProject)]});
+
+  const visibleShots=state.shots.filter(s=>s.project===activeProject);
+  const visibleChanges=state.changes.filter(c=>c.project===activeProject||!c.project);
+  const activeProd=(prods&&prods[activeProject])||{summary:"",dims:[]};
+
+  const totalDur=visibleShots.reduce((s,sh)=>s+sh.duration,0);
+  const avgInt=visibleShots.length?(visibleShots.reduce((s,sh)=>s+sh.intensity,0)/visibleShots.length).toFixed(1):0;
+  const sizeTop=visibleShots.length?Object.entries(visibleShots.reduce((acc,sh)=>{acc[sh.shotSize]=(acc[sh.shotSize]||0)+1;return acc;},{})).sort((a,b)=>b[1]-a[1])[0]:["—",0];
+
+  // 案例库（跨项目，合并所有项目）
+  const allCases=state.shots.filter(s=>s.coreIntent||s.intent||s.creationNote||s.translationNote);
+  const filteredCases=allCases.filter(c=>{
+    if(caseFilter.project&&c.project!==caseFilter.project)return false;
+    if(caseFilter.narrativeFunc&&c.narrativeFunc!==caseFilter.narrativeFunc)return false;
+    if(caseFilter.camMove&&c.camMove!==caseFilter.camMove)return false;
+    if(caseFilter.shotSize&&c.shotSize!==caseFilter.shotSize)return false;
+    if(caseFilter.situation&&c.situation!==caseFilter.situation)return false;
+    if(caseFilter.creationType&&c.creationType!==caseFilter.creationType&&c.translationType!==caseFilter.creationType)return false;
+    if(caseFilter.reusable&&c.reusable!==caseFilter.reusable)return false;
+    if(caseFilter.search&&!JSON.stringify(c).toLowerCase().includes(caseFilter.search.toLowerCase()))return false;
+    return true;
+  });
+
+  // 临时导入（粘贴 JSON 进内存，仍需导出 + commit 才会持久化）
+  const handleImport=()=>{
+    try{
+      const data=JSON.parse(jsonInput);
+      const proj=data.project||activeProject;
+      if(data.type==="changes"||data.changes){
+        const arr=(data.changes||data).map(c=>({...c,project:c.project||proj}));
+        upd({changes:[...state.changes,...arr.filter(c=>!state.changes.find(x=>x.camIdFinal===c.camIdFinal))]});
+        setImportMsg(`✓ 合并对比数据：${arr.length} 条（记得导出 changes.json 并提交）`);setTab(3);setCompareTab(0);
+      } else if(data.type==="production"||data.dims){
+        const newProd={summary:data.summary||"",dims:(data.dims||[]).map(d=>({dim:d.dim||"",score:Number(d.score||5),highlights:d.highlights||"",issues:d.issues||"",outstanding:d.outstanding||""}))};
+        upd({prods:{...prods,[proj]:newProd}});
+        setImportMsg(`✓ 导入制作评估 → ${proj}（记得导出 production.json 并提交）`);setTab(3);setCompareTab(1);
+      } else {
+        const arr=data.shots||data;
+        if(!Array.isArray(arr))throw new Error();
+        const parsed=parseImport(arr,proj);
+        const newProjects=[...new Set([...state.projects,...parsed.map(s=>s.project).filter(Boolean)])];
+        upd({shots:[...state.shots,...parsed],projects:newProjects,activeProject:proj});
+        setImportMsg(`✓ 导入 ${parsed.length} 条镜头 → 项目「${proj}」（记得导出 shots.json 并提交）`);setTab(0);setSelected(null);setExportProj(proj);
+      }
+    }catch(e){setImportMsg("✗ JSON 格式错误");}
+  };
+
+  // 导出单个项目的某个文件（用于 commit 到仓库）
+  const dirOf=p=>(state.projectDirs&&state.projectDirs[p])||p;
+  const exportShots=p=>download("shots.json", shotsForFile(state.shots.filter(s=>s.project===p)));
+  const exportChanges=p=>download("changes.json", state.changes.filter(c=>c.project===p));
+  const exportProd=p=>download("production.json", prods[p]||{summary:"",dims:[]});
+  const exportManifest=()=>download("manifest.json", {projects:(projects||[]).map(p=>({name:p,dir:dirOf(p)}))});
+  const exportBackup=()=>download(`storyboard_backup_${Date.now()}.json`, state);
+
+  const TABS=["节奏曲线","镜头列表","案例库","版本对比","导入/导出"];
+  const selInp={background:surface,border:`1px solid ${border}`,borderRadius:6,padding:"5px 8px",fontSize:12,color:text,outline:"none"};
+  const btn={background:"rgba(255,255,255,0.08)",border:`1px solid ${border}`,borderRadius:6,padding:"6px 14px",fontSize:12,cursor:"pointer",color:text};
+
+  return(
+    <div style={{background:dark,minHeight:"100vh",color:text,fontFamily:"'DM Sans', system-ui, sans-serif",padding:"20px 16px",maxWidth:760,margin:"0 auto",boxSizing:"border-box"}}>
+
+      {/* 标题行 + 项目选择器 */}
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16,flexWrap:"wrap"}}>
+        <span style={{fontSize:18,fontWeight:700,letterSpacing:"-0.5px",color:"#fff"}}>分镜分析</span>
+        <span style={{fontSize:11,color:dim,fontFamily:"monospace"}}>v5 · Pages</span>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:"auto",flexWrap:"wrap"}}>
+          <select value={activeProject} onChange={e=>{upd({activeProject:e.target.value});setExportProj(e.target.value);}} style={{...selInp,fontWeight:600,color:"#fff"}}>
+            {(projects||[]).map(p=><option key={p}>{p}</option>)}
+            {!(projects||[]).length&&<option>默认项目</option>}
+          </select>
+          <div style={{display:"flex",gap:4}}>
+            <input value={newProjectName} onChange={e=>setNewProjectName(e.target.value)} placeholder="新项目名…" onKeyDown={e=>{if(e.key==="Enter"&&newProjectName.trim()){upd({projects:[...new Set([...(projects||[]),newProjectName.trim()])],activeProject:newProjectName.trim()});setNewProjectName("");}}} style={{...selInp,width:90}}/>
+            <button onClick={()=>{if(newProjectName.trim()){upd({projects:[...new Set([...(projects||[]),newProjectName.trim()])],activeProject:newProjectName.trim()});setNewProjectName("");}}} style={{...btn,padding:"5px 10px"}}>+</button>
+          </div>
+          <button onClick={reload} title="从仓库重新加载" style={{...btn,padding:"5px 10px"}}>↻ 重载</button>
+          {dirty?<span style={{fontSize:10,color:"#fbbf24",fontFamily:"monospace"}}>● 有未导出修改</span>
+                :<span style={{fontSize:10,color:"#4ade80",fontFamily:"monospace"}}>✓ 已同步仓库</span>}
+        </div>
+      </div>
+
+      {loadError&&<div style={{background:"rgba(239,68,68,0.08)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#f87171",lineHeight:1.7}}>
+        未能从仓库加载（{loadError}）。请确认 <code style={{fontFamily:"monospace"}}>projects/manifest.json</code> 存在，且通过 http(s) 访问（GitHub Pages 或本地服务器 <code style={{fontFamily:"monospace"}}>python -m http.server</code>）。当前以空数据运行，仍可导入/编辑/导出。
+      </div>}
+
+      {/* 统计行 */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8,marginBottom:20}}>
+        {[["镜头",visibleShots.length,""],["时长",totalDur.toFixed(1)+"s",""],["均时长",(visibleShots.length?totalDur/visibleShots.length:0).toFixed(1)+"s",""],["均强度",avgInt,getIC(Math.round(avgInt))],["景别",sizeTop[0],""]].map(([l,v,c])=>(
+          <div key={l} style={{background:surface,border:`1px solid ${border}`,borderRadius:8,padding:"10px 12px"}}>
+            <div style={{fontSize:10,color:dim,marginBottom:3}}>{l}</div>
+            <div style={{fontSize:16,fontWeight:600,color:c||text,fontFamily:"monospace"}}>{v}</div>
+          </div>))}
+      </div>
+
+      {/* Tab 栏 */}
+      <div style={{display:"flex",gap:2,marginBottom:16,borderBottom:`1px solid ${border}`}}>
+        {TABS.map((t,i)=><button key={i} onClick={()=>setTab(i)} style={{background:"none",border:"none",padding:"8px 14px",fontSize:13,cursor:"pointer",color:tab===i?"#fff":dim,borderBottom:tab===i?"2px solid #fff":"2px solid transparent",fontWeight:tab===i?600:400,transition:"all .15s",marginBottom:-1}}>{t}</button>)}
+      </div>
+
+      {/* ── 节奏曲线 ── */}
+      {tab===0&&<div>
+        <Timeline shots={visibleShots} selected={selected!==null?visibleShots.indexOf(state.shots[selected]):null} onSelect={i=>{const s=visibleShots[i];if(s)setSelected(state.shots.indexOf(s));else setSelected(null);}}/>
+        <div style={{fontSize:10,color:dim,marginBottom:12,textAlign:"right"}}>当前项目：{activeProject} · {visibleShots.length} 镜头</div>
+        <RhythmCurve shots={visibleShots} selected={selected!==null?visibleShots.indexOf(state.shots[selected]):null} onSelect={i=>{const s=visibleShots[i];if(s)setSelected(state.shots.indexOf(s));else setSelected(null);}}/>
+        <div style={{fontSize:10,color:dim,marginBottom:16,textAlign:"right"}}>点击柱子查看详情</div>
+        {selected!==null&&state.shots[selected]&&<ShotDetail shot={state.shots[selected]} onClose={()=>setSelected(null)} onChange={s=>updateShot(selected,s)} projects={projects}/>}
+      </div>}
+
+      {/* ── 镜头列表 ── */}
+      {tab===1&&<div>
+        <div style={{display:"flex",flexDirection:"column",gap:4}}>
+          {visibleShots.map((sh)=>{
+            const gi=state.shots.indexOf(sh);
+            return <div key={gi}>
+              <div onClick={()=>setSelected(selected===gi?null:gi)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",background:selected===gi?"rgba(255,255,255,0.06)":surface,border:`1px solid ${selected===gi?"rgba(255,255,255,0.15)":border}`,borderLeft:`3px solid ${getIC(sh.intensity)}`,borderRadius:8,cursor:"pointer",transition:"background .12s"}}>
+                <span style={{fontFamily:"monospace",fontSize:11,color:dim,minWidth:52}}>{sh.id}</span>
+                {sh.camId&&<span style={{fontFamily:"monospace",fontSize:10,color:faint,minWidth:52}}>{sh.camId}</span>}
+                {sh.timecode&&<span style={{fontFamily:"monospace",fontSize:10,color:faint,minWidth:36}}>{sh.timecode}</span>}
+                <div style={{display:"flex",gap:4,flex:1,flexWrap:"wrap"}}>
+                  <Tag label={sh.shotSize}/><Tag label={sh.camMove}/>
+                  {sh.narrativeFunc&&<Tag label={sh.narrativeFunc}/>}
+                  <Tag color={getIC(sh.intensity)} label={`${sh.intensity}`}/>
+                  {sh.creationType&&<Tag color={"#22c55e"} label={sh.creationType}/>}
+                  {sh.reusable&&<Tag color={sh.reusable==="高"?"#22c55e":"#f59e0b"} label={`↻${sh.reusable}`}/>}
+                </div>
+                <span style={{fontSize:11,color:dim,fontFamily:"monospace"}}>{sh.duration}s</span>
+                <button onClick={e=>{e.stopPropagation();removeShot(gi);}} style={{background:"none",border:"none",color:faint,cursor:"pointer",fontSize:16}}>×</button>
+              </div>
+              {selected===gi&&<ShotDetail shot={sh} onClose={()=>setSelected(null)} onChange={s=>updateShot(gi,s)} projects={projects}/>}
+            </div>;
+          })}
+        </div>
+        <button onClick={addShot} style={{marginTop:10,width:"100%",background:"none",border:`1px dashed ${border}`,borderRadius:8,padding:"10px",fontSize:12,cursor:"pointer",color:dim}}>+ 添加镜头到「{activeProject}」</button>
+      </div>}
+
+      {/* ── 案例库（跨项目）── */}
+      {tab===2&&<div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:12,alignItems:"center"}}>
+          <input placeholder="搜索…" value={caseFilter.search} onChange={e=>setCaseFilter(f=>({...f,search:e.target.value}))} style={{...selInp,flex:"1 1 100px"}}/>
+          <select style={selInp} value={caseFilter.project} onChange={e=>setCaseFilter(f=>({...f,project:e.target.value}))}>
+            <option value="">全部项目</option>{(projects||[]).map(p=><option key={p}>{p}</option>)}
+          </select>
+          <select style={selInp} value={caseFilter.situation} onChange={e=>setCaseFilter(f=>({...f,situation:e.target.value}))}>
+            <option value="">全部情况</option>{SITUATION_TYPES.map(o=><option key={o}>{o}</option>)}
+          </select>
+          <select style={selInp} value={caseFilter.creationType} onChange={e=>setCaseFilter(f=>({...f,creationType:e.target.value}))}>
+            <option value="">全部类型</option>{TRANS_TYPES.map(o=><option key={o}>{o}</option>)}
+          </select>
+          <select style={selInp} value={caseFilter.reusable} onChange={e=>setCaseFilter(f=>({...f,reusable:e.target.value}))}>
+            <option value="">全部复用</option>{REUSABLE.map(o=><option key={o}>{o}</option>)}
+          </select>
+        </div>
+        <div style={{fontSize:11,color:dim,marginBottom:10,fontFamily:"monospace"}}>
+          {filteredCases.length} / {allCases.length} 条案例 · 跨项目 · 共 {state.shots.length} 镜头
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:6}}>
+          {filteredCases.map((c,i)=><CaseCard key={c.id+"_"+c.project+"_"+i} shot={c} onRemove={()=>{const idx=state.shots.findIndex(s=>s.id===c.id&&s.project===c.project);if(idx>=0)updateShot(idx,{...state.shots[idx],coreIntent:"",intent:"",creationNote:"",translationNote:""});}}/>)}
+          {filteredCases.length===0&&<div style={{textAlign:"center",color:dim,padding:32,fontSize:12}}>暂无匹配案例<br/><span style={{fontSize:11,color:faint}}>有 coreIntent / creationNote / translationNote 字段的镜头自动收录</span></div>}
+        </div>
+      </div>}
+
+      {/* ── 版本对比 ── */}
+      {tab===3&&<div>
+        <div style={{display:"flex",gap:2,marginBottom:16,background:"rgba(255,255,255,0.04)",borderRadius:8,padding:4}}>
+          {["初版 vs 定版（分镜决策）","定版 vs 成片（制作实现）"].map((t,i)=><button key={i} onClick={()=>setCompareTab(i)} style={{flex:1,background:compareTab===i?"rgba(255,255,255,0.1)":"none",border:"none",borderRadius:6,padding:"8px 12px",fontSize:12,cursor:"pointer",color:compareTab===i?text:dim,fontWeight:compareTab===i?600:400}}>{t}</button>)}
+        </div>
+        {compareTab===0&&<div>
+          <div style={{fontSize:11,color:dim,marginBottom:12,fontFamily:"monospace"}}>{visibleChanges.length} 条变化记录 · {activeProject}</div>
+          {visibleChanges.length>0&&<div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:12}}>
+            {Object.entries(visibleChanges.reduce((acc,c)=>{(c.changeTypes||[]).forEach(t=>{acc[t]=(acc[t]||0)+1;});return acc;},{})).sort((a,b)=>b[1]-a[1]).map(([t,n])=>(
+              <span key={t} style={{background:`${CHANGE_COLORS[t]||"#6b7280"}22`,color:CHANGE_COLORS[t]||"#9ca3af",border:`1px solid ${CHANGE_COLORS[t]||"#6b7280"}33`,borderRadius:4,padding:"2px 8px",fontSize:10}}>{t} ×{n}</span>))}
+          </div>}
+          <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {visibleChanges.map((c,i)=><ChangeCard key={i} change={c} onRemove={()=>upd({changes:state.changes.filter(x=>x!==c)})}/>)}
+            {visibleChanges.length===0&&<div style={{textAlign:"center",color:dim,padding:32,fontSize:12}}>暂无对比数据<br/><span style={{fontSize:11,color:faint}}>放置 changes.json，或从导入面板粘贴 {'{ "type":"changes", "changes":[...] }'}</span></div>}
+          </div>
+        </div>}
+        {compareTab===1&&<ProdPanel prod={activeProd}/>}
+      </div>}
+
+      {/* ── 导入/导出 ── */}
+      {tab===4&&<div style={{display:"flex",flexDirection:"column",gap:12}}>
+
+        {/* 导出到仓库 */}
+        <div style={{background:surface,border:`1px solid ${border}`,borderRadius:10,padding:16}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#fff",marginBottom:4}}>导出到仓库（持久化）</div>
+          <div style={{fontSize:11,color:dim,marginBottom:12,lineHeight:1.9}}>
+            数据源是仓库里的 JSON 文件，浏览器里的修改不会自动保存。<br/>
+            导出对应文件 → 覆盖仓库里 <code style={{fontFamily:"monospace",color:faint}}>projects/&lt;项目&gt;/</code> 下的同名文件 → <code style={{fontFamily:"monospace",color:faint}}>git commit + push</code> → 刷新工具即生效。
+          </div>
+          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",marginBottom:10}}>
+            <span style={{fontSize:11,color:dim}}>导出项目</span>
+            <select value={exportProj||activeProject} onChange={e=>setExportProj(e.target.value)} style={selInp}>
+              {(projects||[]).map(p=><option key={p}>{p}</option>)}
+            </select>
+            <span style={{fontSize:10,color:faint,fontFamily:"monospace"}}>→ projects/{dirOf(exportProj||activeProject)}/</span>
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+            <button onClick={()=>exportShots(exportProj||activeProject)} style={btn}>导出 shots.json</button>
+            <button onClick={()=>exportChanges(exportProj||activeProject)} style={btn}>导出 changes.json</button>
+            <button onClick={()=>exportProd(exportProj||activeProject)} style={btn}>导出 production.json</button>
+            <button onClick={exportManifest} style={btn}>导出 manifest.json</button>
+            <button onClick={exportBackup} style={{...btn,marginLeft:"auto",color:dim}}>整库备份</button>
+          </div>
+        </div>
+
+        {/* 临时导入 */}
+        <div style={{background:surface,border:`1px solid ${border}`,borderRadius:10,padding:16}}>
+          <div style={{fontSize:13,fontWeight:600,color:"#fff",marginBottom:4}}>临时导入 JSON（粘贴进内存）</div>
+          <div style={{fontSize:11,color:dim,marginBottom:10,lineHeight:1.9}}>
+            适合先看效果。导入后数据进入当前会话，导入到项目「{activeProject}」<br/>
+            · <code style={{fontFamily:"monospace",color:faint}}>镜头数组 / {'{"shots":[...]}'}</code> → 节奏曲线<br/>
+            · <code style={{fontFamily:"monospace",color:faint}}>{'{"type":"changes","changes":[...]}'}</code> → 版本对比<br/>
+            · <code style={{fontFamily:"monospace",color:faint}}>{'{"dims":[...]}'}</code> → 制作评估<br/>
+            <span style={{color:"#fbbf24"}}>导入后记得用上方按钮导出对应文件并提交，否则刷新即丢失。</span>
+          </div>
+          <textarea value={jsonInput} onChange={e=>{setJsonInput(e.target.value);setImportMsg("");}} placeholder="粘贴 JSON…" style={{width:"100%",minHeight:120,background:"rgba(0,0,0,0.3)",border:`1px solid ${border}`,borderRadius:8,padding:12,fontSize:12,fontFamily:"monospace",color:text,resize:"vertical",outline:"none",boxSizing:"border-box"}}/>
+          <div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+            <button onClick={handleImport} style={{background:"rgba(255,255,255,0.1)",border:"1px solid rgba(255,255,255,0.15)",borderRadius:6,padding:"8px 20px",fontSize:13,cursor:"pointer",color:"#fff",fontWeight:600}}>导入到内存</button>
+            <button onClick={reload} style={{background:"none",border:`1px solid ${border}`,borderRadius:6,padding:"8px 20px",fontSize:13,cursor:"pointer",color:dim}}>↻ 丢弃修改·重载仓库</button>
+          </div>
+          {importMsg&&<div style={{marginTop:10,fontSize:12,padding:"8px 12px",borderRadius:6,background:importMsg.startsWith("✓")?"rgba(34,197,94,0.1)":"rgba(239,68,68,0.1)",color:importMsg.startsWith("✓")?"#4ade80":"#f87171",border:`1px solid ${importMsg.startsWith("✓")?"rgba(74,222,128,0.2)":"rgba(248,113,113,0.2)"}`}}>{importMsg}</div>}
+        </div>
+
+        {/* 工作流 */}
+        <div style={{background:surface,border:`1px solid ${border}`,borderRadius:10,padding:16,fontSize:12,color:dim,lineHeight:2.1}}>
+          <div style={{fontWeight:600,color:text,marginBottom:6,fontSize:13}}>本地编辑工作流</div>
+          {["Gemini 出 JSON → 临时导入看效果","json2excel 转 Excel → 手动校准 cam_id / shot_number","Excel 转回 JSON → 临时导入 → 此面板「导出 shots.json」","用导出的文件覆盖 projects/<项目>/shots.json","git add . && git commit -m \"update\" && git push","等 GitHub Pages 部署完成 → 工具点「↻ 重载」即更新","新增项目：建 projects/<新项目>/ 文件夹 + 更新 manifest.json"].map((s,i)=>(
+            <div key={i} style={{display:"flex",gap:8}}><span style={{color:faint,fontFamily:"monospace",minWidth:16}}>{i+1}</span><span>{s}</span></div>))}
+        </div>
+      </div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
